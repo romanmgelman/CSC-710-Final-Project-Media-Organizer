@@ -1,0 +1,194 @@
+# genpics: test data generator for mo
+#
+# Spits out a bunch of fake photo/video files with real, readable
+# date metadata so you can exercise the organizer.
+#
+# Photos get proper EXIF DateTimeOriginal written in.
+# Videos get their file mtime set (hachoir usually falls back to that
+# anyway on simple synthetic files, and mo's mtime fallback catches them).
+#
+# needs: pip install Pillow piexif
+
+import argparse
+import os
+import random
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
+import piexif
+
+
+# file types we'll randomly pick from.
+# heic/raw formats are left out because Pillow can't write them without
+# extra wheels that are a pain to install. mo still handles them fine
+# in the wild, this is just the generator being realistic.
+PHOTO_EXTS = [".jpg", ".jpeg", ".png", ".tiff", ".webp", ".bmp"]
+VIDEO_EXTS = [".mov", ".mp4", ".avi", ".mkv"]
+
+# some photos get no metadata at all so we can test the skipped bucket
+NO_META_CHANCE = 0.08
+
+# a handful of plausible camera strings for flavor
+FAKE_CAMERAS = [
+    ("Canon", "EOS R5"),
+    ("Sony", "ILCE-7M4"),
+    ("Nikon", "Z 6II"),
+    ("FUJIFILM", "X-T5"),
+    ("Apple", "iPhone 15 Pro"),
+    ("Google", "Pixel 8"),
+    ("Panasonic", "DC-GH6"),
+]
+
+
+def random_date_between(start, end):
+    """Uniform random datetime between two bounds."""
+    delta = end - start
+    seconds = random.randint(0, int(delta.total_seconds()))
+    return start + timedelta(seconds=seconds)
+
+
+def make_photo(path, size, dt, write_metadata):
+    """Draw a solid-color image with a date label, optionally stamp EXIF."""
+    w, h = size
+    # pick a random-ish pastel so they're visually distinguishable
+    color = (random.randint(80, 230),
+             random.randint(80, 230),
+             random.randint(80, 230))
+    img = Image.new("RGB", (w, h), color)
+
+    draw = ImageDraw.Draw(img)
+    label = dt.strftime("%Y-%m-%d %H:%M:%S")
+    # fall back to the default bitmap font so this works without a font file
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 24)
+    except (OSError, IOError):
+        font = ImageFont.load_default()
+    draw.text((10, 10), label, fill=(20, 20, 20), font=font)
+    draw.text((10, h - 30), path.name, fill=(20, 20, 20), font=font)
+
+    ext = path.suffix.lower()
+
+    # EXIF only really makes sense on jpeg/tiff/webp. for png/bmp we skip it
+    # and mo will just fall back to mtime, which we set below anyway.
+    exif_bytes = None
+    if write_metadata and ext in (".jpg", ".jpeg", ".tiff", ".webp"):
+        make, model = random.choice(FAKE_CAMERAS)
+        exif_str = dt.strftime("%Y:%m:%d %H:%M:%S")
+        exif_dict = {
+            "0th": {
+                piexif.ImageIFD.Make: make.encode(),
+                piexif.ImageIFD.Model: model.encode(),
+                piexif.ImageIFD.DateTime: exif_str.encode(),
+            },
+            "Exif": {
+                piexif.ExifIFD.DateTimeOriginal: exif_str.encode(),
+                piexif.ExifIFD.DateTimeDigitized: exif_str.encode(),
+            },
+        }
+        try:
+            exif_bytes = piexif.dump(exif_dict)
+        except Exception:
+            exif_bytes = None
+
+    # Pillow wants specific format strings for some extensions
+    save_format = {
+        ".jpg": "JPEG", ".jpeg": "JPEG",
+        ".png": "PNG", ".tiff": "TIFF", ".tif": "TIFF",
+        ".webp": "WEBP", ".bmp": "BMP",
+    }[ext]
+
+    save_kwargs = {}
+    if exif_bytes and save_format in ("JPEG", "TIFF", "WEBP"):
+        save_kwargs["exif"] = exif_bytes
+
+    img.save(path, format=save_format, **save_kwargs)
+
+    # always set mtime so mo's last-resort fallback still sees something sensible
+    ts = dt.timestamp()
+    os.utime(path, (ts, ts))
+
+
+def make_video(path, dt):
+    """
+    Write a tiny placeholder file with the right extension and set its mtime.
+    Real video muxing is out of scope; mo's hachoir pass will usually fail
+    on these and fall through to mtime, which is exactly what we want to test.
+    """
+    # a few bytes of junk so it's not zero-length
+    path.write_bytes(os.urandom(random.randint(1024, 8192)))
+    ts = dt.timestamp()
+    os.utime(path, (ts, ts))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate fake photos/videos with date metadata for mo."
+    )
+    parser.add_argument("output", type=Path,
+                        help="Folder to dump generated files into.")
+    parser.add_argument("-n", "--count", type=int, default=50,
+                        help="How many files to generate (default 50).")
+    parser.add_argument("--start-year", type=int, default=2020,
+                        help="Earliest year for random dates.")
+    parser.add_argument("--end-year", type=int, default=2026,
+                        help="Latest year for random dates.")
+    parser.add_argument("--videos", type=float, default=0.15,
+                        help="Fraction of files that should be videos (0-1).")
+    parser.add_argument("--subdirs", type=int, default=0,
+                        help="If >0, scatter files into this many subfolders.")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Random seed for reproducible runs.")
+    args = parser.parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+
+    args.output.mkdir(parents=True, exist_ok=True)
+
+    start = datetime(args.start_year, 1, 1)
+    end = datetime(args.end_year, 12, 31, 23, 59, 59)
+
+    # precompute which folder each file goes into (if any)
+    if args.subdirs > 0:
+        subfolders = [args.output / f"batch_{i+1:02d}"
+                      for i in range(args.subdirs)]
+        for sf in subfolders:
+            sf.mkdir(exist_ok=True)
+    else:
+        subfolders = [args.output]
+
+    # track counts so duplicate-filename collisions are rare
+    counter = 0
+    for _ in range(args.count):
+        counter += 1
+        is_video = random.random() < args.videos
+        ext = random.choice(VIDEO_EXTS if is_video else PHOTO_EXTS)
+        folder = random.choice(subfolders)
+
+        dt = random_date_between(start, end)
+        # occasionally collide dates on purpose to test the rename suffix logic
+        if random.random() < 0.1:
+            dt = dt.replace(hour=12, minute=0, second=0)
+
+        name = f"IMG_{counter:04d}{ext}"
+        path = folder / name
+
+        if is_video:
+            make_video(path, dt)
+            kind = "video"
+        else:
+            # randomize size so the output has visual variety and varied file sizes
+            w = random.choice([640, 800, 1024, 1280, 1920])
+            h = random.choice([480, 600, 768, 720, 1080])
+            write_meta = random.random() >= NO_META_CHANCE
+            make_photo(path, (w, h), dt, write_meta)
+            kind = "photo" + ("" if write_meta else " (no meta)")
+
+        print(f"  {path.relative_to(args.output)}  {dt:%Y-%m-%d %H:%M}  [{kind}]")
+
+    print(f"\nDone. {args.count} files generated in {args.output}")
+
+
+if __name__ == "__main__":
+    main()
