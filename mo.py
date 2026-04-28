@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import threading
 from datetime import datetime
@@ -301,6 +302,9 @@ class MoApp(tk.Tk):
         self.apply_btn = ttk.Button(actions, text="Apply",
                                     command=self.run_apply, state="disabled")
         self.apply_btn.pack(side="left", padx=8)
+        self.undo_btn = ttk.Button(actions, text="Undo Last Operation",
+                           command=self.undo_last_operation)
+        self.undo_btn.pack(side="left", padx=8)
 
         # preview tree — groups files under year / month
         tree_frame = ttk.LabelFrame(self, text="Preview")
@@ -436,16 +440,88 @@ class MoApp(tk.Tk):
         self.progress["value"] = 0
 
         plan = self.plan
+        dest_folder = Path(self.dest_var.get())
         def work():
             def cb(i, total, name):
                 self.worker_queue.put(("progress", i, total, f"{op.capitalize()}ing: {name}"))
             try:
                 ok, err, errors = execute_plan(plan, op, cb)
+                
+                undo_log = []
+                for item in plan:
+                    if not item["skipped"]:
+                        undo_log.append({
+                            "operation": op,
+                            "src": str(item["src"]),
+                            "dst": str(item["dst"])
+                        })
+
+                undo_path = dest_folder / "mo_undo_log.json"
+                with open(undo_path, "w", encoding="utf-8") as f:
+                    json.dump(undo_log, f, indent=2)
+                
                 self.worker_queue.put(("apply_done", ok, err, errors))
             except Exception as e:
                 self.worker_queue.put(("error", str(e)))
 
         threading.Thread(target=work, daemon=True).start()
+        
+    # undo function
+    def undo_last_operation(self):
+        dest = self.dest_var.get().strip()
+
+        if not dest:
+            messagebox.showerror("mo", "Pick the destination folder first.")
+            return
+
+        undo_path = Path(dest) / "mo_undo_log.json"
+
+        if not undo_path.exists():
+            messagebox.showerror("mo", "No undo log found in the destination folder.")
+            return
+
+        if not messagebox.askyesno("Confirm Undo", "Undo the last operation?"):
+            return
+
+        try:
+            with open(undo_path, "r", encoding="utf-8") as f:
+                undo_log = json.load(f)
+
+            undone = 0
+            errors = []
+
+            for item in reversed(undo_log):
+                src = Path(item["src"])
+                dst = Path(item["dst"])
+                operation = item["operation"]
+
+                try:
+                    if operation == "move":
+                        if dst.exists():
+                            src.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(dst), str(src))
+                            undone += 1
+
+                    elif operation == "copy":
+                        if dst.exists():
+                            dst.unlink()
+                            undone += 1
+
+                except Exception as e:
+                    errors.append(f"{dst.name}: {e}")
+
+            undo_path.unlink()
+
+            if errors:
+                messagebox.showwarning(
+                    "Undo finished with errors",
+                    f"Undone: {undone}\n\nErrors:\n" + "\n".join(errors[:10])
+                )
+            else:
+                messagebox.showinfo("Undo Complete", f"Undone: {undone} file(s).")
+
+        except Exception as e:
+            messagebox.showerror("mo", f"Undo failed:\n{e}")
 
     # poll the queue so background threads can update the UI safely.
     # tkinter really doesn't like being touched from other threads.
