@@ -3,7 +3,8 @@
 # Spits out a bunch of fake photo/video files with real, readable
 # date metadata so you can exercise the organizer.
 #
-# Photos get proper EXIF DateTimeOriginal written in.
+# Photos get proper EXIF DateTimeOriginal written in, plus optional
+# GPS coordinates from a list of real-world cities.
 # Videos get their file mtime set (hachoir usually falls back to that
 # anyway on simple synthetic files, and mo's mtime fallback catches them).
 #
@@ -40,6 +41,32 @@ FAKE_CAMERAS = [
     ("Panasonic", "DC-GH6"),
 ]
 
+# real-world coordinates for a spread of countries — gives the
+# reverse-geocoder something interesting to chew on. Mix of major
+# cities + a few less-obvious places so the output has variety.
+FAKE_LOCATIONS = [
+    ("New York, USA",        40.7128,  -74.0060),
+    ("San Francisco, USA",   37.7749, -122.4194),
+    ("Los Angeles, USA",     34.0522, -118.2437),
+    ("London, UK",           51.5074,   -0.1278),
+    ("Paris, France",        48.8566,    2.3522),
+    ("Berlin, Germany",      52.5200,   13.4050),
+    ("Rome, Italy",          41.9028,   12.4964),
+    ("Barcelona, Spain",     41.3851,    2.1734),
+    ("Tokyo, Japan",         35.6762,  139.6503),
+    ("Kyoto, Japan",         35.0116,  135.7681),
+    ("Bangkok, Thailand",    13.7563,  100.5018),
+    ("Bali, Indonesia",      -8.3405,  115.0920),
+    ("Sydney, Australia",   -33.8688,  151.2093),
+    ("Toronto, Canada",      43.6532,  -79.3832),
+    ("Mexico City, Mexico",  19.4326,  -99.1332),
+    ("Rio de Janeiro, BR",  -22.9068,  -43.1729),
+    ("Cape Town, ZA",       -33.9249,   18.4241),
+    ("Mumbai, India",        19.0760,   72.8777),
+    ("Singapore",             1.3521,  103.8198),
+    ("Seoul, South Korea",   37.5665,  126.9780),
+]
+
 
 def random_date_between(start, end):
     """Uniform random datetime between two bounds."""
@@ -48,15 +75,44 @@ def random_date_between(start, end):
     return start + timedelta(seconds=seconds)
 
 
-def make_photo(path, size, dt, write_metadata):
-    """Draw a solid-color image with a date label, optionally stamp EXIF."""
+def decimal_to_dms_rational(decimal):
+    """
+    Convert a signed decimal coordinate into the EXIF GPS format:
+    a tuple of three rationals ((deg_num, deg_den), (min_num, min_den),
+    (sec_num, sec_den)).
+
+    EXIF stores GPS as unsigned magnitudes — the hemisphere ('N'/'S' or
+    'E'/'W') goes in a separate ref tag. So we strip the sign here and
+    let the caller stamp the ref.
+
+    Example: 40.7128 -> ((40,1), (42,1), (4608,100))
+    """
+    decimal = abs(decimal)
+    degrees = int(decimal)
+    minutes_full = (decimal - degrees) * 60
+    minutes = int(minutes_full)
+    seconds = (minutes_full - minutes) * 60
+    # store seconds with 2 decimal places of precision (×100 numerator)
+    return (
+        (degrees, 1),
+        (minutes, 1),
+        (int(round(seconds * 100)), 100),
+    )
+
+
+def make_photo(path, size, dt, write_metadata, gps_coords=None):
+    """
+    Draw a solid-color image with a date label, optionally stamp EXIF.
+
+    gps_coords: optional (label, lat, lng) tuple. If provided and the
+    format supports EXIF, GPS tags get written too.
+    """
     w, h = size
     # pick a random-ish pastel so they're visually distinguishable
     color = (random.randint(80, 230),
              random.randint(80, 230),
              random.randint(80, 230))
     img = Image.new("RGB", (w, h), color)
-
     draw = ImageDraw.Draw(img)
     label = dt.strftime("%Y-%m-%d %H:%M:%S")
     # fall back to the default bitmap font so this works without a font file
@@ -64,8 +120,14 @@ def make_photo(path, size, dt, write_metadata):
         font = ImageFont.truetype("DejaVuSans.ttf", 24)
     except (OSError, IOError):
         font = ImageFont.load_default()
+
     draw.text((10, 10), label, fill=(20, 20, 20), font=font)
     draw.text((10, h - 30), path.name, fill=(20, 20, 20), font=font)
+    # also draw the location name if we have one — makes it easy to
+    # eyeball whether sorting worked correctly without opening EXIF
+    if gps_coords is not None:
+        loc_label, _, _ = gps_coords
+        draw.text((10, 40), loc_label, fill=(20, 20, 20), font=font)
 
     ext = path.suffix.lower()
 
@@ -86,6 +148,18 @@ def make_photo(path, size, dt, write_metadata):
                 piexif.ExifIFD.DateTimeDigitized: exif_str.encode(),
             },
         }
+        # add GPS section if coordinates were provided
+        if gps_coords is not None:
+            _, lat, lng = gps_coords
+            lat_ref = b'N' if lat >= 0 else b'S'
+            lng_ref = b'E' if lng >= 0 else b'W'
+            exif_dict["GPS"] = {
+                piexif.GPSIFD.GPSVersionID: (2, 0, 0, 0),
+                piexif.GPSIFD.GPSLatitudeRef: lat_ref,
+                piexif.GPSIFD.GPSLatitude: decimal_to_dms_rational(lat),
+                piexif.GPSIFD.GPSLongitudeRef: lng_ref,
+                piexif.GPSIFD.GPSLongitude: decimal_to_dms_rational(lng),
+            }
         try:
             exif_bytes = piexif.dump(exif_dict)
         except Exception:
@@ -97,11 +171,9 @@ def make_photo(path, size, dt, write_metadata):
         ".png": "PNG", ".tiff": "TIFF", ".tif": "TIFF",
         ".webp": "WEBP", ".bmp": "BMP",
     }[ext]
-
     save_kwargs = {}
     if exif_bytes and save_format in ("JPEG", "TIFF", "WEBP"):
         save_kwargs["exif"] = exif_bytes
-
     img.save(path, format=save_format, **save_kwargs)
 
     # always set mtime so mo's last-resort fallback still sees something sensible
@@ -135,6 +207,11 @@ def main():
                         help="Latest year for random dates.")
     parser.add_argument("--videos", type=float, default=0.15,
                         help="Fraction of files that should be videos (0-1).")
+    parser.add_argument("--gps-coverage", type=float, default=0.7,
+                        help="Fraction of EXIF-bearing photos that get GPS "
+                             "(0-1, default 0.7). Reflects the real-world "
+                             "mix where most phone photos have GPS but some "
+                             "don't.")
     parser.add_argument("--subdirs", type=int, default=0,
                         help="If >0, scatter files into this many subfolders.")
     parser.add_argument("--seed", type=int, default=None,
@@ -160,13 +237,14 @@ def main():
 
     # track counts so duplicate-filename collisions are rare
     counter = 0
+
     for _ in range(args.count):
         counter += 1
         is_video = random.random() < args.videos
         ext = random.choice(VIDEO_EXTS if is_video else PHOTO_EXTS)
         folder = random.choice(subfolders)
-
         dt = random_date_between(start, end)
+
         # occasionally collide dates on purpose to test the rename suffix logic
         if random.random() < 0.1:
             dt = dt.replace(hour=12, minute=0, second=0)
@@ -182,8 +260,20 @@ def main():
             w = random.choice([640, 800, 1024, 1280, 1920])
             h = random.choice([480, 600, 768, 720, 1080])
             write_meta = random.random() >= NO_META_CHANCE
-            make_photo(path, (w, h), dt, write_meta)
-            kind = "photo" + ("" if write_meta else " (no meta)")
+            # only write GPS if we're writing metadata at all, AND we
+            # roll under the coverage threshold. Photos without metadata
+            # never get GPS (you can't write GPS without EXIF).
+            gps = None
+            if write_meta and random.random() < args.gps_coverage:
+                gps = random.choice(FAKE_LOCATIONS)
+            make_photo(path, (w, h), dt, write_meta, gps_coords=gps)
+            kind = "photo"
+            if not write_meta:
+                kind += " (no meta)"
+            elif gps is None:
+                kind += " (no gps)"
+            else:
+                kind += f" @ {gps[0]}"
 
         print(f"  {path.relative_to(args.output)}  {dt:%Y-%m-%d %H:%M}  [{kind}]")
 

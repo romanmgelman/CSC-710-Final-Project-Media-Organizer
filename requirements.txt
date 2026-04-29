@@ -1,0 +1,10 @@
+# core dependencies for mo.py
+exif>=1.6.0
+hachoir>=3.3.0
+
+# location sorting (geo.py)
+reverse_geocoder>=1.5.1
+
+# test data generator (genpics.py)
+Pillow>=10.0.0
+piexif>=1.1.3
