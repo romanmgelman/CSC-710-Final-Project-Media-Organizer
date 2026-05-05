@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import threading
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from queue import Queue, Empty
@@ -146,6 +147,23 @@ def get_file_date(path):
         return dt, "mtime"
     return None, "none"
 
+def hash_file(path, chunk_size=1024 * 1024):
+    """
+    Return SHA256 hash of a file.
+
+    Reads in chunks so large files don't use huge amounts of memory.
+    """
+    sha = hashlib.sha256()
+
+    try:
+        with open(path, "rb") as f:
+            while chunk := f.read(chunk_size):
+                sha.update(chunk)
+
+        return sha.hexdigest()
+
+    except Exception:
+        return None
 
 # -------------------------------------------------------------
 # figuring out where everything should go
