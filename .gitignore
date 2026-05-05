@@ -1,0 +1,12 @@
+# generated media
+test_media/
+
+# python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# undo logs
+mo_undo_log.json

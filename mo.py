@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import threading
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from queue import Queue, Empty
@@ -146,6 +147,23 @@ def get_file_date(path):
         return dt, "mtime"
     return None, "none"
 
+def hash_file(path, chunk_size=1024 * 1024):
+    """
+    Return SHA256 hash of a file.
+
+    Reads in chunks so large files don't use huge amounts of memory.
+    """
+    sha = hashlib.sha256()
+
+    try:
+        with open(path, "rb") as f:
+            while chunk := f.read(chunk_size):
+                sha.update(chunk)
+
+        return sha.hexdigest()
+
+    except Exception:
+        return None
 
 # -------------------------------------------------------------
 # figuring out where everything should go
@@ -192,6 +210,7 @@ def build_plan(source, dest, recursive, rename, sort_mode, progress_cb=None):
     """
     plan = []
     used_dsts = set()
+    seen_hashes = {}
 
     # gather candidate files
     if recursive:
@@ -204,6 +223,18 @@ def build_plan(source, dest, recursive, rename, sort_mode, progress_cb=None):
     for i, src in enumerate(candidates):
         if progress_cb:
             progress_cb(i, total, src.name)
+            
+        file_hash = hash_file(src)
+
+        duplicate = False
+        duplicate_of = None
+
+        if file_hash:
+            if file_hash in seen_hashes:
+                duplicate = True
+                duplicate_of = seen_hashes[file_hash]
+            else:
+                seen_hashes[file_hash] = src
 
         # always need a date for date-based modes; for pure location mode
         # we tolerate missing dates (just won't include them in skipped)
@@ -220,10 +251,12 @@ def build_plan(source, dest, recursive, rename, sort_mode, progress_cb=None):
 
         # decide whether this file should land in the skipped bucket
         skip_reason = None
-        if sort_mode == SORT_BY_DATE and not dt:
+
+        if duplicate:
+            skip_reason = "duplicate file"
+        elif sort_mode == SORT_BY_DATE and not dt:
             skip_reason = "no date found"
         elif sort_mode == SORT_BY_DATE_LOCATION and not dt:
-            # combined mode also needs a date — fall through to skip
             skip_reason = "no date found"
         # pure location mode: even files without GPS are kept (Unknown/)
         # combined mode: even files without GPS are kept (Year/Month/Unknown/)
