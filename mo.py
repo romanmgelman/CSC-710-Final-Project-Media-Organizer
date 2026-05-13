@@ -12,9 +12,16 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import customtkinter as ctk
+from tkinterdnd2 import DND_FILES, TkinterDnD
 
 ctk.set_appearance_mode("system")
 ctk.set_default_color_theme("blue")
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    HAS_DND = True
+except ImportError:
+    HAS_DND = False
 
 import geo
 
@@ -448,6 +455,7 @@ class MoApp(ctk.CTk):
 
     def __init__(self):
         super().__init__()
+        self.TkdndVersion = TkinterDnD._require(self)
         self.title("mo")
         self.geometry("1120x760")
         self.minsize(920, 600)
@@ -612,12 +620,19 @@ class MoApp(ctk.CTk):
         r1.grid_columnconfigure(0, weight=1)
 
         self.source_var = tk.StringVar()
-        ctk.CTkEntry(
-            r1, textvariable=self.source_var,
-            placeholder_text="Choose folder…",
-            font=self._mono(12), height=32, corner_radius=7,
-            fg_color=self._ENTY, border_color=self._EBDR, border_width=1,
-        ).grid(row=0, column=0, sticky="ew")
+        self.source_entry = ctk.CTkEntry(
+            r1,
+            textvariable=self.source_var,
+            placeholder_text="Choose or drop folder…",
+            font=self._mono(12),
+            height=32,
+            corner_radius=7,
+            fg_color=self._ENTY,
+            border_color=self._EBDR,
+            border_width=1,
+        )
+        self.source_entry.grid(row=0, column=0, sticky="ew")
+        self._enable_folder_drop(self.source_entry, "source")
         ctk.CTkButton(
             r1, text="…", width=32, height=32, corner_radius=7,
             fg_color=self._SURF, hover_color=self._RULE,
@@ -631,12 +646,19 @@ class MoApp(ctk.CTk):
         r2.grid_columnconfigure(0, weight=1)
 
         self.dest_var = tk.StringVar()
-        ctk.CTkEntry(
-            r2, textvariable=self.dest_var,
-            placeholder_text="Choose folder…",
-            font=self._mono(12), height=32, corner_radius=7,
-            fg_color=self._ENTY, border_color=self._EBDR, border_width=1,
-        ).grid(row=0, column=0, sticky="ew")
+        self.dest_entry = ctk.CTkEntry(
+            r2,
+            textvariable=self.dest_var,
+            placeholder_text="Choose or drop folder…",
+            font=self._mono(12),
+            height=32,
+            corner_radius=7,
+            fg_color=self._ENTY,
+            border_color=self._EBDR,
+            border_width=1,
+        )
+        self.dest_entry.grid(row=0, column=0, sticky="ew")
+        self._enable_folder_drop(self.dest_entry, "dest")
         ctk.CTkButton(
             r2, text="…", width=32, height=32, corner_radius=7,
             fg_color=self._SURF, hover_color=self._RULE,
@@ -908,6 +930,33 @@ class MoApp(ctk.CTk):
             parts.append(f"{skipped} skipped")
         self._badge_var.set("  " + "  ·  ".join(parts))
         self._badge_lbl.grid()
+        
+    def _clean_drop_path(self, raw):
+        path = raw.strip()
+
+        if path.startswith("{") and path.endswith("}"):
+            path = path[1:-1]
+
+        return path
+
+
+    def _enable_folder_drop(self, widget, target):
+        widget.drop_target_register(DND_FILES)
+
+        def on_drop(event):
+            path = self._clean_drop_path(event.data)
+
+            if not Path(path).is_dir():
+                messagebox.showerror("mo", "Please drop a folder, not a file.")
+                return
+
+            if target == "source":
+                self.source_var.set(path)
+                self._scan_source(path)
+            else:
+                self.dest_var.set(path)
+
+        widget.dnd_bind("<<Drop>>", on_drop)
 
     # ── Folder pickers ────────────────────────────────────────────────
 
