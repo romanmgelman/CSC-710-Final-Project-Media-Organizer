@@ -150,12 +150,15 @@ def get_file_date(path):
     dt = get_date_from_exif(path)
     if dt:
         return dt, "exif"
+
     dt = get_date_from_hachoir(path)
     if dt:
         return dt, "hachoir"
+
     dt = get_date_from_mtime(path)
     if dt:
         return dt, "mtime"
+
     return None, "none"
 
 
@@ -1127,24 +1130,91 @@ class MoApp(ctk.CTk):
                     tags=("skipped",),
                 )
 
-    def _populate_date_tree(self, items):
-        by_folder = {}
-        for item in items:
-            by_folder.setdefault((item["year"], item["month"]), []).append(item)
+    def _populate_tree(self, plan, sort_mode):
+        self.tree.delete(*self.tree.get_children())
 
-        for (year, month) in sorted(by_folder.keys(),
-                                    key=lambda k: (k[0], MONTH_NAMES.index(k[1]))):
-            year_id = f"year::{year}"
-            if not self.tree.exists(year_id):
-                self.tree.insert("", "end", iid=year_id, text=year,
-                                 values=("", "", "", ""), open=True)
-            mitems   = by_folder[(year, month)]
-            month_id = f"month::{year}::{month}"
-            self.tree.insert(year_id, "end", iid=month_id,
-                             text=f"{month}  ·  {len(mitems)} files",
-                             values=("", "", "", ""), open=False)
-            for item in mitems:
-                self._insert_file_row(month_id, item)
+        skipped = [p for p in plan if p["skipped"]]
+        active = [p for p in plan if not p["skipped"]]
+
+        if sort_mode == SORT_BY_DATE:
+            self._populate_date_tree(active)
+        elif sort_mode == SORT_BY_LOCATION:
+            self._populate_location_tree(active)
+        else:
+            self._populate_date_location_tree(active)
+
+        duplicates = [p for p in skipped if p["reason"] == "duplicate"]
+        missing_metadata = [p for p in skipped if p["reason"] == "no date"]
+        other_skipped = [
+            p for p in skipped
+            if p["reason"] not in ("duplicate", "no date")
+        ]
+
+        if duplicates:
+            dup_id = "duplicates"
+            self.tree.insert(
+                "",
+                "end",
+                iid=dup_id,
+                text=f"🟡 Duplicates ({len(duplicates)})",
+                values=("", "", "", ""),
+                tags=("skipped",),
+                open=True,
+            )
+
+            for item in duplicates:
+                original = item.get("duplicate_of")
+                original_name = original.name if original else "unknown"
+
+                self.tree.insert(
+                    dup_id,
+                    "end",
+                    text=item["src"].name,
+                    values=("duplicate", "—", "—", f"same as {original_name}"),
+                    tags=("skipped",),
+                )
+
+        if missing_metadata:
+            meta_id = "missing_metadata"
+            self.tree.insert(
+                "",
+                "end",
+                iid=meta_id,
+                text=f"⚠ Missing Metadata ({len(missing_metadata)})",
+                values=("", "", "", ""),
+                tags=("skipped",),
+                open=True,
+            )
+
+            for item in missing_metadata:
+                self.tree.insert(
+                    meta_id,
+                    "end",
+                    text=item["src"].name,
+                    values=("needs date", "—", "—", "no date metadata"),
+                    tags=("skipped",),
+                )
+
+        if other_skipped:
+            sid = "skipped"
+            self.tree.insert(
+                "",
+                "end",
+                iid=sid,
+                text=f"⚠ Skipped ({len(other_skipped)})",
+                values=("", "", "", ""),
+                tags=("skipped",),
+                open=False,
+            )
+
+            for item in other_skipped:
+                self.tree.insert(
+                    sid,
+                    "end",
+                    text=item["src"].name,
+                    values=("—", "—", "—", item["reason"]),
+                    tags=("skipped",),
+                )
 
     def _populate_location_tree(self, items):
         by_country = {}
