@@ -207,10 +207,12 @@ def build_plan(source, dest, recursive, rename, sort_mode, progress_cb=None):
 
         file_hash = hash_file(src)
         duplicate = False
+        duplicate_of = None
 
         if file_hash:
             if file_hash in seen_hashes:
                 duplicate = True
+                duplicate_of = seen_hashes[file_hash]
             else:
                 seen_hashes[file_hash] = src
 
@@ -236,6 +238,8 @@ def build_plan(source, dest, recursive, rename, sort_mode, progress_cb=None):
                 "year": None, "month": None, "date": None, "source_tag": date_tag,
                 "lat": lat, "lng": lng, "country": country, "city": city,
                 "gps_tag": gps_tag, "skipped": True, "reason": skip_reason,
+                "duplicate_of": duplicate_of,
+                "file_hash": file_hash,
             })
             continue
 
@@ -1064,8 +1068,9 @@ class MoApp(ctk.CTk):
 
     def _populate_tree(self, plan, sort_mode):
         self.tree.delete(*self.tree.get_children())
-        skipped = [p for p in plan if     p["skipped"]]
-        active  = [p for p in plan if not p["skipped"]]
+
+        skipped = [p for p in plan if p["skipped"]]
+        active = [p for p in plan if not p["skipped"]]
 
         if sort_mode == SORT_BY_DATE:
             self._populate_date_tree(active)
@@ -1074,17 +1079,53 @@ class MoApp(ctk.CTk):
         else:
             self._populate_date_location_tree(active)
 
-        if skipped:
+        duplicates = [p for p in skipped if p["reason"] == "duplicate"]
+        other_skipped = [p for p in skipped if p["reason"] != "duplicate"]
+
+        if duplicates:
+            dup_id = "duplicates"
+            self.tree.insert(
+                "",
+                "end",
+                iid=dup_id,
+                text=f"🟡 Duplicates ({len(duplicates)})",
+                values=("", "", "", ""),
+                tags=("skipped",),
+                open=True,
+            )
+
+            for item in duplicates:
+                original = item.get("duplicate_of")
+                original_name = original.name if original else "unknown"
+
+                self.tree.insert(
+                    dup_id,
+                    "end",
+                    text=item["src"].name,
+                    values=("duplicate", "—", "—", f"same as {original_name}"),
+                    tags=("skipped",),
+                )
+
+        if other_skipped:
             sid = "skipped"
-            self.tree.insert("", "end", iid=sid,
-                             text=f"⚠  Skipped  ({len(skipped)})",
-                             values=("", "", "", ""),
-                             tags=("skipped",), open=False)
-            for item in skipped:
-                self.tree.insert(sid, "end",
-                                 text=item["src"].name,
-                                 values=("—", "—", "—", item["reason"]),
-                                 tags=("skipped",))
+            self.tree.insert(
+                "",
+                "end",
+                iid=sid,
+                text=f"⚠  Skipped  ({len(other_skipped)})",
+                values=("", "", "", ""),
+                tags=("skipped",),
+                open=False,
+            )
+
+            for item in other_skipped:
+                self.tree.insert(
+                    sid,
+                    "end",
+                    text=item["src"].name,
+                    values=("—", "—", "—", item["reason"]),
+                    tags=("skipped",),
+                )
 
     def _populate_date_tree(self, items):
         by_folder = {}
