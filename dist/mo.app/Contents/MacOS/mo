@@ -1,0 +1,55 @@
+#!/bin/bash
+# Launcher for mo.app — finds a working Python 3 and runs mo.py from Resources.
+# Tests each candidate for Tk compatibility before committing to it.
+
+RESOURCES="$(cd "$(dirname "$0")/../Resources" && pwd)"
+
+# Returns 0 if $1 can create a Tk window (import tkinter; tk.Tk()), 1 otherwise.
+_tk_ok() {
+    "$1" - <<'EOF' 2>/dev/null
+import tkinter as tk
+try:
+    r = tk.Tk()
+    r.destroy()
+except Exception:
+    raise SystemExit(1)
+EOF
+}
+
+# Candidates in preference order:
+#   1. python.org framework installs — have their own bundled Tcl/Tk 8.6
+#   2. Homebrew (arm64 and Intel paths)
+#   3. Generic python3 / system python3 as last resort
+PYTHON=""
+for candidate in \
+    /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 \
+    /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
+    /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 \
+    /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 \
+    /opt/homebrew/bin/python3.14 \
+    /opt/homebrew/bin/python3.13 \
+    /opt/homebrew/bin/python3.12 \
+    /opt/homebrew/bin/python3.11 \
+    /opt/homebrew/bin/python3 \
+    /usr/local/bin/python3.14 \
+    /usr/local/bin/python3.13 \
+    /usr/local/bin/python3.12 \
+    /usr/local/bin/python3.11 \
+    /usr/local/bin/python3 \
+    python3 \
+    /usr/bin/python3
+do
+    if command -v "$candidate" &>/dev/null 2>&1 || [ -x "$candidate" ]; then
+        if _tk_ok "$candidate"; then
+            PYTHON="$candidate"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PYTHON" ]; then
+    osascript -e 'display alert "mo — compatible Python not found" message "mo requires Python 3.11 or later with a working Tk install.\n\nInstall Python 3.12 from python.org (the macOS 64-bit universal installer), then relaunch mo.app.\n\nDo NOT use the system Python 3.9 from Command Line Tools — it lacks a compatible Tcl/Tk on macOS 26." buttons {"OK"} default button "OK"'
+    exit 1
+fi
+
+exec "$PYTHON" "$RESOURCES/mo.py"

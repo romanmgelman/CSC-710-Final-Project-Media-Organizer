@@ -15,3 +15,4 @@ __pycache__/
 
 # undo logs
 mo_undo_log.json
+.vscode/settings.json
